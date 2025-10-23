@@ -1,0 +1,1 @@
+# wc-manual-pay
