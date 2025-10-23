@@ -1,0 +1,39 @@
+/**
+ * Admin styles
+ */
+.wcmanualpay-admin-override {
+    margin-top: 20px;
+    padding: 15px;
+    background: #f9f9f9;
+    border: 1px solid #ddd;
+}
+
+.wcmanualpay-admin-override h3 {
+    margin-top: 0;
+}
+
+.status-pending {
+    color: #f57900;
+    font-weight: bold;
+}
+
+.status-used {
+    color: #73d216;
+    font-weight: bold;
+}
+
+.nav-tab-wrapper {
+    margin-bottom: 0;
+}
+
+.tab-content {
+    background: #fff;
+    padding: 20px;
+    border: 1px solid #ccc;
+    border-top: none;
+}
+
+table.wp-list-table th,
+table.wp-list-table td {
+    padding: 8px 10px;
+}

@@ -1,0 +1,40 @@
+{
+  "name": "md-riaz/wc-manual-pay",
+  "description": "WordPress WooCommerce Manual Payment Gateway with REST API transaction verification",
+  "type": "wordpress-plugin",
+  "keywords": [
+    "wordpress",
+    "woocommerce",
+    "payment-gateway",
+    "manual-payment",
+    "transaction-verification"
+  ],
+  "license": "GPL-2.0-or-later",
+  "authors": [
+    {
+      "name": "MD Riaz",
+      "homepage": "https://github.com/md-riaz"
+    }
+  ],
+  "require": {
+    "php": ">=7.4"
+  },
+  "require-dev": {
+    "squizlabs/php_codesniffer": "^3.7",
+    "wp-coding-standards/wpcs": "^2.3"
+  },
+  "autoload": {
+    "classmap": [
+      "includes/"
+    ]
+  },
+  "scripts": {
+    "phpcs": "phpcs --standard=WordPress includes/ wc-manual-pay.php",
+    "phpcbf": "phpcbf --standard=WordPress includes/ wc-manual-pay.php"
+  },
+  "config": {
+    "allow-plugins": {
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    }
+  }
+}
