@@ -23,10 +23,11 @@ All features from the problem statement have been successfully implemented.
 
 **Features**:
 - ✅ Verify key authentication (via header or body)
-- ✅ Create transaction notifications
+- ✅ Optional IP allowlist enforcement before processing the payload
+- ✅ Transaction upsert with payer masking and payload archiving
 - ✅ Idempotency (prevents duplicates based on provider + txn_id)
-- ✅ Automatic order matching when transaction created
-- ✅ Comprehensive validation (required fields, formats)
+- ✅ Automatic order matching when transactions are created
+- ✅ Validation of required fields and occurred_at timestamps
 - ✅ Proper error responses with HTTP status codes
 
 **Parameters**:
@@ -35,22 +36,22 @@ All features from the problem statement have been successfully implemented.
 - `amount` (required): Transaction amount
 - `currency` (required): Currency code
 - `occurred_at` (optional): Transaction timestamp
-- `status` (optional): Transaction status
+- `status` (optional): `NEW` (default) or `INVALID` (any other value is coerced to `NEW`)
 
 ### ✅ Database Tables
 
 **Transactions Table** (`wp_wcmanualpay_transactions`):
-- Stores all payment transactions
-- Fields: id, provider, txn_id, amount, currency, occurred_at, status, order_id, used_at, created_at, updated_at
-- Unique constraint on (provider, txn_id)
-- Indexed columns for performance
+- Stores all payment transactions received from customers or webhooks
+- Fields: `id`, `provider`, `txn_id`, `amount`, `currency`, `payer`, `occurred_at`, `status`, `matched_order_id`, `meta_json`, `idem_key`, `created_at`, `updated_at`
+- Unique constraints on `(provider, txn_id)` and `idem_key`
+- Indexed columns for status, order linkage, and occurred_at
 - HPOS compatible
 
-**Audit Log Table** (`wp_wcmanualpay_audit_log`):
-- Comprehensive activity logging
-- Fields: id, action, transaction_id, order_id, user_id, data, ip_address, user_agent, created_at
-- Tracks all actions and events
-- JSON data field for flexible logging
+**Audit Log Table** (`wp_wcmanualpay_audit`):
+- Records every automated and manual action
+- Fields: `id`, `actor`, `action`, `object_type`, `object_id`, `data_json`, `at`
+- Tracks webhook attempts, matches, overrides, and admin changes
+- JSON payloads capture contextual metadata
 
 ### ✅ Payment Gateway
 
@@ -64,27 +65,32 @@ All features from the problem statement have been successfully implemented.
 
 **Payment Processing**:
 - ✅ Automatic transaction matching on checkout
-- ✅ Amount validation (within 0.01 tolerance)
+- ✅ Amount validation with strict (0.01) or lenient (5.00) tolerances depending on mode
 - ✅ Currency validation
-- ✅ 72-hour time window validation
-- ✅ Status checking (prevents reuse)
+- ✅ Configurable verification window enforcement
+- ✅ Status checking that prevents reuse of `USED`, `INVALID`, or `REJECTED` transactions
 - ✅ Order completion when match found
-- ✅ Pending status when no match
+- ✅ Pending/on-hold handling when no match
 
 **Settings**:
 - Enable/Disable toggle
 - Title and description customization
 - Verify key configuration
 - Payment providers list (one per line)
+- Auto-verify mode (Off, Lenient, Strict)
+- Time window configuration (hours, with 0 disabling the limit)
+- Auto-complete on match toggle
+- Webhook IP allowlist (comma/newline separated)
+- Mask payer storage toggle
 
 ### ✅ Transaction Matching Logic
 
 **Validation Rules**:
 1. ✅ Provider and txn_id must match exactly
-2. ✅ Amount must match order total (±0.01 tolerance)
+2. ✅ Amount difference must be within the tolerance defined by the auto-verify mode (0.01 for strict, 5.00 for lenient)
 3. ✅ Currency must match order currency
-4. ✅ Transaction must be within 72 hours
-5. ✅ Transaction status must be "pending" (not already used)
+4. ✅ Transaction must be within the configured verification window (unless set to 0)
+5. ✅ Transaction status must be `NEW` or `MATCHED`
 6. ✅ Idempotent - duplicate transactions return existing ID
 
 **Automatic Matching**:
@@ -109,18 +115,18 @@ All features from the problem statement have been successfully implemented.
 ### ✅ Admin Pages
 
 **Transactions Page** (`WooCommerce > Manual Pay`):
-- ✅ List all transactions in table format
-- ✅ Filter by status (pending/used)
+- ✅ List all transactions with provider, amount, payer, timestamps, and linked order
+- ✅ Filter by status (NEW, MATCHED, USED, INVALID, REJECTED)
 - ✅ Filter by provider
 - ✅ Pagination support
 - ✅ Links to associated orders
-- ✅ Displays all transaction details
+- ✅ Displays decoded metadata payloads when available
 
 **Audit Log Tab**:
 - ✅ View all logged actions
-- ✅ Shows user, IP, timestamp
+- ✅ Surfaces actor, action, object, and JSON metadata for each entry
 - ✅ Pagination support
-- ✅ Links to orders and transactions
+- ✅ Links to related orders when available
 
 ### ✅ HPOS Compatibility
 
@@ -153,10 +159,10 @@ All features from the problem statement have been successfully implemented.
 - ✅ Permission checks for admin features
 
 **Audit Trail**:
-- ✅ IP address logging
-- ✅ User agent logging
-- ✅ User ID tracking
-- ✅ Comprehensive action logging
+- ✅ Actor recorded for every event (user email/login or system origin)
+- ✅ Object type and ID stored for traceability
+- ✅ Structured JSON metadata per entry (can include IP addresses when relevant)
+- ✅ Timestamp captured at log creation
 
 ### ✅ Documentation
 
@@ -214,13 +220,10 @@ wc-manual-pay/
 - ✅ WordPress coding standards followed
 
 ### Security
-- ✅ CodeQL analysis completed
-- ✅ No JavaScript vulnerabilities found
-- ✅ SQL injection protection implemented
-- ✅ XSS protection implemented
-- ✅ CSRF protection implemented
-- ✅ Input sanitization throughout
-- ✅ Output escaping throughout
+- ✅ Database access routed through `$wpdb` helpers with prepared statements
+- ✅ User input sanitised and validated before persistence or rendering
+- ✅ Admin actions protected by capability checks and WordPress nonces
+- ✅ REST API requests require verify key authentication with optional IP allowlist
 
 ### Best Practices
 - ✅ Object-oriented architecture
@@ -276,24 +279,25 @@ wc-manual-pay/
 ## Validation Features
 
 ### Amount Validation
-- ✅ Must match order total
-- ✅ Tolerance: ±0.01 for decimal rounding
-- ✅ Prevents incorrect payments
+- ✅ Must align with the WooCommerce order total
+- ✅ Strict mode tolerance: ±0.01
+- ✅ Lenient mode tolerance: ±5.00 currency units
+- ✅ Prevents incorrect payments while supporting reconciliation wiggle room
 
 ### Currency Validation
 - ✅ Must match order currency exactly
 - ✅ Prevents currency mismatches
 - ✅ Case-insensitive comparison
 
-### Time Window (72 Hours)
-- ✅ Transactions must be recent
-- ✅ Prevents old transaction reuse
-- ✅ Configurable via filter hook
+### Time Window (Configurable)
+- ✅ Transactions must be within the configured hour window
+- ✅ Prevents replay of stale transactions when enabled
+- ✅ Setting accepts `0` to disable age validation entirely
 
 ### Status Validation
-- ✅ Prevents duplicate usage
-- ✅ Tracks used/pending status
-- ✅ Audit trail for status changes
+- ✅ Only `NEW` and `MATCHED` transactions are eligible for use
+- ✅ Prevents duplicate usage once marked `USED`
+- ✅ Audit logging captures every status change
 
 ## Audit Logging
 
@@ -307,11 +311,11 @@ wc-manual-pay/
 - Order matching
 
 ### Log Details
-- User ID (who performed action)
-- IP address (where from)
-- User agent (what client)
-- Timestamp (when)
-- Additional data (JSON format)
+- Actor (user email/login or system identifier)
+- Action code (e.g., `API_TRANSACTION_CREATED`, `TRANSACTION_USED`)
+- Object type and ID for contextual linkage
+- JSON metadata payload (`data_json`)
+- Timestamp (`at`)
 
 ## Performance Considerations
 
@@ -322,10 +326,11 @@ wc-manual-pay/
 - ✅ UNIQUE constraint for idempotency
 
 ### API
-- ✅ Lightweight responses
-- ✅ Early validation to reduce processing
-- ✅ Proper HTTP status codes
-- ✅ Timeout handling
+- ✅ JSON responses with explicit success/error payloads
+- ✅ Early validation to reduce unnecessary processing
+- ✅ Proper HTTP status codes for success and failure scenarios
+- ✅ Idempotent handling for duplicate provider/txn_id submissions
+- ✅ Audit logging for authentication failures and duplicate deliveries
 
 ## Compatibility
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-WCManualPay provides a REST API endpoint for receiving transaction notifications from payment providers. All requests must be authenticated using a verify key.
+WCManualPay provides a REST API endpoint for receiving transaction notifications from payment providers. All requests must be authenticated using a verify key that you configure inside the gateway settings in WooCommerce.
 
 ## Base URL
 
@@ -27,11 +27,13 @@ X-Verify-Key: your_secret_key
 }
 ```
 
+> **Note:** When an IP allowlist is configured, requests originating outside the approved addresses are rejected with `ip_not_allowed` even if the verify key is valid.
+
 ## Endpoints
 
 ### POST /notify
 
-Create a new transaction notification.
+Create or update a transaction notification.
 
 #### Request
 
@@ -49,7 +51,8 @@ X-Verify-Key: your_secret_key
   "amount": 150.75,
   "currency": "BDT",
   "occurred_at": "2025-10-23 10:30:00",
-  "status": "pending"
+  "status": "NEW",
+  "payer": "+8801******45"
 }
 ```
 
@@ -62,7 +65,8 @@ X-Verify-Key: your_secret_key
 | amount | decimal | Yes | Transaction amount (must be > 0) |
 | currency | string | Yes | Currency code (e.g., BDT, USD) |
 | occurred_at | string | No | Transaction timestamp in Y-m-d H:i:s format. Defaults to current time |
-| status | string | No | Transaction status. Defaults to "pending" |
+| status | string | No | `NEW` (default) or `INVALID`. Any other value is normalised to `NEW` |
+| payer | string | No | Payer identifier (masked on storage when enabled) |
 
 #### Response
 
@@ -81,9 +85,11 @@ X-Verify-Key: your_secret_key
   "success": true,
   "message": "Transaction already exists.",
   "transaction_id": 123,
-  "status": "pending"
+  "status": "NEW"
 }
 ```
+
+> **Note:** The `status` field in duplicate responses reflects the current status stored in the database (for example `NEW`, `MATCHED`, `USED`, `INVALID`, or `REJECTED`).
 
 **Error Responses**:
 
@@ -183,17 +189,18 @@ curl -X POST https://yoursite.com/wp-json/wcmanualpay/v1/notify \
 
 **With all parameters**:
 ```bash
-curl -X POST https://yoursite.com/wp-json/wcmanualpay/v1/notify \
-  -H "Content-Type: application/json" \
-  -H "X-Verify-Key: your_secret_key" \
-  -d '{
-    "provider": "bkash",
-    "txn_id": "ABC123456",
-    "amount": 150.75,
-    "currency": "BDT",
-    "occurred_at": "2025-10-23 10:30:00",
-    "status": "pending"
-  }'
+  curl -X POST https://yoursite.com/wp-json/wcmanualpay/v1/notify \
+    -H "Content-Type: application/json" \
+    -H "X-Verify-Key: your_secret_key" \
+    -d '{
+      "provider": "bkash",
+      "txn_id": "ABC123456",
+      "amount": 150.75,
+      "currency": "BDT",
+      "occurred_at": "2025-10-23 10:30:00",
+      "status": "INVALID",
+      "payer": "+8801******45"
+    }'
 ```
 
 ### PHP
@@ -315,10 +322,10 @@ When a transaction is created via the API, WCManualPay automatically attempts to
 
 1. **Provider Match**: Order must have the same provider
 2. **Transaction ID Match**: Order must have the same transaction ID
-3. **Amount Match**: Transaction amount must match order total (within 0.01 tolerance)
+3. **Amount Match**: Transaction amount must match the order total. Strict mode allows a maximum difference of 0.01, while lenient mode permits differences up to 5.00 in the transaction currency
 4. **Currency Match**: Transaction currency must match order currency
-5. **Time Window**: Transaction must be within 72 hours of occurrence
-6. **Status Check**: Transaction must not already be used
+5. **Time Window**: Transaction must be within the configured verification window (hours). Setting the window to 0 disables the age check
+6. **Status Check**: Transaction must be in `NEW` or `MATCHED` status (never `USED`, `INVALID`, or `REJECTED`)
 
 If all criteria are met, the order is automatically completed and the transaction is marked as "used".
 
@@ -326,8 +333,8 @@ If all criteria are met, the order is automatically completed and the transactio
 
 The API implements idempotency based on the combination of `provider` and `txn_id`. If you send the same transaction multiple times:
 
-1. First request creates the transaction and returns 201 Created
-2. Subsequent requests return 200 OK with the existing transaction details
+1. First request creates the transaction and returns `201 Created`
+2. Subsequent requests return `200 OK` with the existing transaction details and the stored status (`NEW`, `MATCHED`, `USED`, `INVALID`, or `REJECTED`)
 3. No duplicate transactions are created
 
 This ensures safe retry logic in case of network failures.
@@ -365,7 +372,7 @@ $response = wp_remote_post('https://yoursite.com/wp-json/wcmanualpay/v1/notify',
         'amount' => $bkash_data['amount'],
         'currency' => 'BDT',
         'occurred_at' => date('Y-m-d H:i:s', strtotime($bkash_data['transactionTime'])),
-        'status' => 'pending',
+        'status' => 'NEW',
     )),
 ));
 ```
@@ -412,9 +419,9 @@ function send_transaction_to_wcmanualpay($provider, $txn_id, $amount, $currency,
 Check that:
 1. Provider name matches exactly (case-sensitive)
 2. Transaction ID matches exactly
-3. Amount matches order total (within 0.01)
+3. Amount matches order total within the tolerance defined by the auto-verify mode (0.01 strict / 5.00 lenient)
 4. Currency matches order currency
-5. Transaction is within 72 hours
+5. Transaction is within the configured verification window (or the window is disabled)
 6. Transaction hasn't been used already
 
 ### Authentication Failures

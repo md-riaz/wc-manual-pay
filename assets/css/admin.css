@@ -37,3 +37,21 @@ table.wp-list-table th,
 table.wp-list-table td {
     padding: 8px 10px;
 }
+
+.wcmanualpay-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.wcmanualpay-actions form {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.wcmanualpay-actions input[type="number"],
+.wcmanualpay-actions input[type="text"],
+.wcmanualpay-actions select {
+    max-width: 120px;
+}

@@ -119,6 +119,9 @@ class WCManualPay_Database {
 
         $data = wp_parse_args($data, $defaults);
 
+        $mask_payer = array_key_exists('mask_payer', $data) ? (bool) $data['mask_payer'] : true;
+        unset($data['mask_payer']);
+
         $provider = substr(sanitize_text_field($data['provider']), 0, 32);
         $txn_id = substr(sanitize_text_field($data['txn_id']), 0, 128);
 
@@ -134,7 +137,7 @@ class WCManualPay_Database {
 
         $amount = self::format_amount($data['amount']);
         $currency = substr(strtoupper(sanitize_text_field($data['currency'])), 0, 3);
-        $payer = self::mask_payer($data['payer']);
+        $payer = self::mask_payer($data['payer'], $mask_payer);
         $occurred_at = self::normalize_datetime($data['occurred_at']);
         $matched_order_id = isset($data['matched_order_id']) && '' !== $data['matched_order_id'] ? absint($data['matched_order_id']) : null;
         $meta_json = self::prepare_meta_json($data['meta_json']);
@@ -241,6 +244,9 @@ class WCManualPay_Database {
             return false;
         }
 
+        $mask_payer = array_key_exists('mask_payer', $data) ? (bool) $data['mask_payer'] : true;
+        unset($data['mask_payer']);
+
         $allowed_fields = array(
             'status' => '%s',
             'matched_order_id' => '%d',
@@ -271,7 +277,7 @@ class WCManualPay_Database {
                     $update_data[$key] = self::prepare_meta_json($value);
                     break;
                 case 'payer':
-                    $update_data[$key] = self::mask_payer($value);
+                    $update_data[$key] = self::mask_payer($value, $mask_payer);
                     break;
             }
 
@@ -336,6 +342,118 @@ class WCManualPay_Database {
         }
 
         return false;
+    }
+
+    /**
+     * Link a transaction to an order and update status.
+     *
+     * @param int    $transaction_id Transaction ID.
+     * @param int    $order_id       WooCommerce order ID.
+     * @param string $status         Target status (default MATCHED).
+     * @param string $actor          Optional actor override for audit log.
+     * @return bool
+     */
+    public static function link_transaction_to_order($transaction_id, $order_id, $status = 'MATCHED', $actor = null) {
+        global $wpdb;
+
+        $table = $wpdb->prefix . 'wcmanualpay_transactions';
+        $transaction = self::get_transaction_by_id($transaction_id);
+        $order_id = absint($order_id);
+
+        if (!$transaction || !$order_id || 'USED' === $transaction->status) {
+            return false;
+        }
+
+        $status = self::normalize_status($status);
+
+        if (!in_array($status, array('MATCHED', 'USED', 'NEW'), true)) {
+            $status = 'MATCHED';
+        }
+
+        $result = $wpdb->update(
+            $table,
+            array(
+                'status' => $status,
+                'matched_order_id' => $order_id,
+            ),
+            array('id' => absint($transaction_id)),
+            array('%s', '%d'),
+            array('%d')
+        );
+
+        if (false !== $result) {
+            self::log_audit(
+                'TRANSACTION_LINKED',
+                'transaction',
+                $transaction_id,
+                array(
+                    'order_id' => $order_id,
+                    'status' => $status,
+                ),
+                $actor
+            );
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Unlink a transaction from an order with audit trail.
+     *
+     * @param int    $transaction_id Transaction ID.
+     * @param string $target_status  Status to apply after unlink (MATCHED or NEW).
+     * @param string $reason         Reason for unlinking.
+     * @param string $actor          Optional actor override for audit log.
+     * @return bool
+     */
+    public static function unlink_transaction_from_order($transaction_id, $target_status = 'MATCHED', $reason = '', $actor = null) {
+        global $wpdb;
+
+        $table = $wpdb->prefix . 'wcmanualpay_transactions';
+        $transaction = self::get_transaction_by_id($transaction_id);
+
+        if (!$transaction || empty($transaction->matched_order_id)) {
+            return false;
+        }
+
+        $normalized_status = self::normalize_status($target_status);
+
+        if (!in_array($normalized_status, array('MATCHED', 'NEW'), true)) {
+            $normalized_status = 'MATCHED';
+        }
+
+        $result = $wpdb->query(
+            $wpdb->prepare(
+                "UPDATE {$table} SET status = %s, matched_order_id = NULL WHERE id = %d",
+                $normalized_status,
+                absint($transaction_id)
+            )
+        );
+
+        if (false === $result) {
+            return false;
+        }
+
+        $audit_data = array(
+            'previous_status' => $transaction->status,
+            'previous_order_id' => $transaction->matched_order_id,
+            'target_status' => $normalized_status,
+        );
+
+        if ('' !== $reason) {
+            $audit_data['reason'] = $reason;
+        }
+
+        self::log_audit(
+            'TRANSACTION_UNLINKED',
+            'transaction',
+            $transaction_id,
+            $audit_data,
+            $actor
+        );
+
+        return true;
     }
 
     /**
@@ -505,7 +623,14 @@ class WCManualPay_Database {
             $ip = $_SERVER['REMOTE_ADDR'];
         }
 
-        return sanitize_text_field(wp_unslash($ip));
+        $ip = wp_unslash($ip);
+
+        if (false !== strpos($ip, ',')) {
+            $parts = array_map('trim', explode(',', $ip));
+            $ip = $parts[0];
+        }
+
+        return sanitize_text_field($ip);
     }
 
     /**
@@ -550,33 +675,43 @@ class WCManualPay_Database {
      * @param string $payer Raw payer input.
      * @return string
      */
-    private static function mask_payer($payer) {
+    private static function mask_payer($payer, $mask = true) {
         $payer = trim((string) $payer);
 
         if ('' === $payer) {
             return '';
         }
 
+        if (!$mask) {
+            if (function_exists('mb_substr')) {
+                $payer = mb_substr($payer, 0, 191);
+            } else {
+                $payer = substr($payer, 0, 191);
+            }
+
+            return sanitize_text_field($payer);
+        }
+
         if (function_exists('mb_substr')) {
             $payer = mb_substr($payer, 0, 191);
             $length = mb_strlen($payer);
             if ($length <= 4) {
-                return str_repeat('*', $length);
+                return sanitize_text_field(str_repeat('*', $length));
             }
 
             $suffix = mb_substr($payer, -4);
-            return str_repeat('*', $length - 4) . $suffix;
+            return sanitize_text_field(str_repeat('*', $length - 4) . $suffix);
         }
 
         $payer = substr($payer, 0, 191);
         $length = strlen($payer);
 
         if ($length <= 4) {
-            return str_repeat('*', $length);
+            return sanitize_text_field(str_repeat('*', $length));
         }
 
         $suffix = substr($payer, -4);
-        return str_repeat('*', $length - 4) . $suffix;
+        return sanitize_text_field(str_repeat('*', $length - 4) . $suffix);
     }
 
     /**

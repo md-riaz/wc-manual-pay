@@ -54,6 +54,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Auto verification modes (Off/Lenient/Strict), configurable verification window, and optional auto-completion of matched orders.
+- Webhook IP allowlist enforcement and configurable payer masking during storage.
+- Admin transaction actions to link, mark used, reject, or unlink records with required reasons and audit trail entries.
+
+### Changed
+- REST API stores optional payer data, honours the allowlist, and respects the configured tolerance/time window when auto matching.
+- Transactions table now tracks raw webhook payloads, idem keys, and the expanded status lifecycle (`NEW`, `MATCHED`, `USED`, `INVALID`, `REJECTED`).
+- Manual payment override now requires a justification which is persisted to the audit log and the order notes.
+
+### Documentation
+- Updated README and API reference to reflect the new configuration options, data model, and reconciliation workflows.
+
 ### Planned Features
 - Webhook signature verification
 - Custom status mappings

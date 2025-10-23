@@ -92,6 +92,20 @@ class WCManualPay_REST_API {
             return new WP_Error('invalid_verify_key', __('Invalid verify key.', 'wc-manual-pay'), array('status' => 401));
         }
 
+        $allowlist = $gateway->get_ip_allowlist();
+
+        if (!empty($allowlist)) {
+            $remote_ip = WCManualPay_Database::get_client_ip();
+
+            if ('' === $remote_ip || !$this->ip_in_allowlist($remote_ip, $allowlist)) {
+                WCManualPay_Database::log_audit('API_IP_REJECTED', 'webhook', null, array(
+                    'ip' => $remote_ip,
+                ), 'system:webhook');
+
+                return new WP_Error('ip_not_allowed', __('Webhook IP address is not allowlisted.', 'wc-manual-pay'), array('status' => 401));
+            }
+        }
+
         return true;
     }
 
@@ -102,6 +116,11 @@ class WCManualPay_REST_API {
      * @return WP_REST_Response|WP_Error
      */
     public function handle_notify($request) {
+        $auto_verify_mode = WCManualPay_Gateway::get_global_auto_verify_mode();
+        $time_window_hours = WCManualPay_Gateway::get_global_time_window_hours();
+        $auto_complete = WCManualPay_Gateway::is_auto_complete_globally_enabled();
+        $mask_payer = WCManualPay_Gateway::is_mask_payer_globally_enabled();
+
         // Get parameters
         $provider = sanitize_text_field($request->get_param('provider'));
         $txn_id = sanitize_text_field($request->get_param('txn_id'));
@@ -182,6 +201,7 @@ class WCManualPay_REST_API {
             'status' => $status,
             'payer' => $payer,
             'meta_json' => $meta_payload,
+            'mask_payer' => $mask_payer,
         ));
 
         if (!$transaction_id) {
@@ -200,7 +220,7 @@ class WCManualPay_REST_API {
         ), 'system:webhook');
 
         // Try to match with pending orders
-        $this->try_match_pending_orders($transaction_id);
+        $this->try_match_pending_orders($transaction_id, $auto_verify_mode, $time_window_hours, $auto_complete);
 
         return new WP_REST_Response(array(
             'success' => true,
@@ -214,7 +234,11 @@ class WCManualPay_REST_API {
      *
      * @param int $transaction_id Transaction ID
      */
-    private function try_match_pending_orders($transaction_id) {
+    private function try_match_pending_orders($transaction_id, $mode, $time_window_hours, $auto_complete) {
+        if ('off' === $mode) {
+            return;
+        }
+
         $transaction = WCManualPay_Database::get_transaction_by_id($transaction_id);
 
         if (!$transaction) {
@@ -225,7 +249,6 @@ class WCManualPay_REST_API {
             return;
         }
 
-        // Get pending orders with matching provider and txn_id
         $orders = wc_get_orders(array(
             'status' => array('pending', 'on-hold'),
             'payment_method' => 'wcmanualpay',
@@ -246,71 +269,96 @@ class WCManualPay_REST_API {
         ));
 
         foreach ($orders as $order) {
-            // Validate transaction against order
-            $gateway = new WCManualPay_Gateway();
-            $validation = $this->validate_transaction_for_order($transaction, $order);
+            $validation = WCManualPay_Gateway::validate_transaction_rules($transaction, $order, $mode, $time_window_hours);
 
-            if (true === $validation) {
-                // Mark transaction as used
-                WCManualPay_Database::mark_transaction_used($transaction_id, $order->get_id());
+            if (true !== $validation) {
+                continue;
+            }
 
-                // Set order transaction ID
+            if ($auto_complete) {
+                $marked = WCManualPay_Database::mark_transaction_used($transaction_id, $order->get_id());
+
+                if (!$marked) {
+                    WCManualPay_Database::log_audit('API_MARK_USED_FAILED', 'order', $order->get_id(), array(
+                        'transaction_id' => $transaction_id,
+                    ), 'system:webhook');
+                    continue;
+                }
+
                 $order->set_transaction_id($transaction->txn_id);
                 $order->add_order_note(
                     sprintf(
-                        __('Payment verified via REST API. Provider: %s, Transaction ID: %s', 'wc-manual-pay'),
+                        __('Payment verified via REST API. Provider: %1$s, Transaction ID: %2$s', 'wc-manual-pay'),
                         $transaction->provider,
                         $transaction->txn_id
                     )
                 );
-
-                // Complete payment
                 $order->payment_complete($transaction->txn_id);
 
-                // Log audit
                 WCManualPay_Database::log_audit('API_PAYMENT_MATCHED', 'order', $order->get_id(), array(
                     'transaction_id' => $transaction_id,
-                ));
+                    'auto_completed' => true,
+                ), 'system:webhook');
 
-                // Only match one order
                 break;
             }
+
+            $linked = WCManualPay_Database::link_transaction_to_order($transaction_id, $order->get_id(), 'MATCHED', 'system:webhook');
+
+            if (!$linked) {
+                WCManualPay_Database::log_audit('API_LINK_FAILED', 'order', $order->get_id(), array(
+                    'transaction_id' => $transaction_id,
+                ), 'system:webhook');
+                continue;
+            }
+
+            $order->set_transaction_id($transaction->txn_id);
+            $order->add_order_note(
+                sprintf(
+                    __('Transaction %1$s matched via webhook (provider: %2$s) and awaits manual completion.', 'wc-manual-pay'),
+                    $transaction->txn_id,
+                    $transaction->provider
+                )
+            );
+            $order->update_status('on-hold', __('Transaction matched and awaiting manual completion.', 'wc-manual-pay'));
+
+            WCManualPay_Database::log_audit('API_TRANSACTION_MATCHED', 'order', $order->get_id(), array(
+                'transaction_id' => $transaction_id,
+                'auto_completed' => false,
+            ), 'system:webhook');
+
+            break;
         }
     }
 
     /**
-     * Validate transaction against order
+     * Determine if IP address is allowed by configured allowlist.
      *
-     * @param object $transaction Transaction object
-     * @param WC_Order $order Order object
-     * @return bool|string True if valid, error message otherwise
+     * @param string $ip        Remote IP address.
+     * @param array  $allowlist Allowlist entries.
+     * @return bool
      */
-    private function validate_transaction_for_order($transaction, $order) {
-        // Check if already used
-        if ('USED' === $transaction->status) {
-            return __('Transaction already used.', 'wc-manual-pay');
+    private function ip_in_allowlist($ip, $allowlist) {
+        if (empty($allowlist)) {
+            return true;
         }
 
-        // Check amount
-        if (abs(floatval($transaction->amount) - floatval($order->get_total())) > 0.01) {
-            return __('Amount mismatch.', 'wc-manual-pay');
+        foreach ($allowlist as $allowed) {
+            if ('*' === $allowed) {
+                return true;
+            }
+
+            if (false !== strpos($allowed, '*')) {
+                $pattern = '/^' . str_replace('\*', '.*', preg_quote($allowed, '/')) . '$/i';
+
+                if (preg_match($pattern, $ip)) {
+                    return true;
+                }
+            } elseif ($ip === $allowed) {
+                return true;
+            }
         }
 
-        // Check currency
-        if (strtoupper($transaction->currency) !== strtoupper($order->get_currency())) {
-            return __('Currency mismatch.', 'wc-manual-pay');
-        }
-
-        // Check 72-hour window
-        $occurred_time = strtotime($transaction->occurred_at);
-        $current_time = current_time('timestamp');
-        $time_diff = $current_time - $occurred_time;
-        $hours_72 = 72 * 60 * 60;
-
-        if ($time_diff > $hours_72) {
-            return __('Transaction expired.', 'wc-manual-pay');
-        }
-
-        return true;
+        return false;
     }
 }
