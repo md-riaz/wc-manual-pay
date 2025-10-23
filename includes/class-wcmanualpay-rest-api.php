@@ -55,7 +55,14 @@ class WCManualPay_REST_API {
      * @return bool|WP_Error
      */
     public function verify_request($request) {
-        $gateway = WC()->payment_gateways->payment_gateways()['wcmanualpay'] ?? null;
+        // Ensure payment gateways are initialized before attempting to access them.
+        $payment_gateways = WC()->payment_gateways();
+
+        if (!$payment_gateways || !is_callable(array($payment_gateways, 'payment_gateways'))) {
+            return new WP_Error('gateway_controller_unavailable', __('Unable to load payment gateways.', 'wc-manual-pay'), array('status' => 500));
+        }
+
+        $gateway = $payment_gateways->payment_gateways()['wcmanualpay'] ?? null;
 
         if (!$gateway) {
             return new WP_Error('gateway_not_found', __('Payment gateway not configured.', 'wc-manual-pay'), array('status' => 500));
