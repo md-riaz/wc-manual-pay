@@ -9,7 +9,7 @@
 2. Activate plugin via WordPress admin
 3. Verify database tables are created:
    - `wp_wcmanualpay_transactions`
-   - `wp_wcmanualpay_audit_log`
+   - `wp_wcmanualpay_audit`
 
 **Expected Results**:
 - Plugin activates without errors
@@ -67,7 +67,7 @@ curl -X POST https://yoursite.com/wp-json/wcmanualpay/v1/notify \
     "amount": 100.50,
     "currency": "BDT",
     "occurred_at": "2025-10-23 10:30:00",
-    "status": "pending"
+    "status": "NEW"
   }'
 ```
 
@@ -90,7 +90,7 @@ Run the same request again.
   "success": true,
   "message": "Transaction already exists.",
   "transaction_id": 1,
-  "status": "pending"
+  "status": "NEW"
 }
 ```
 
@@ -164,12 +164,11 @@ curl -X POST https://yoursite.com/wp-json/wcmanualpay/v1/notify \
 6. Place order
 
 **Expected Results**:
-- Order status immediately changes to "Processing" or "Completed"
+- Order status changes to "Processing"/"Completed" when auto-complete on match is enabled; otherwise it remains "On hold" with a note that a match was found
 - Order transaction ID set to "TXN100"
-- Transaction in database marked as "used"
-- Transaction `order_id` field set to order ID
-- Transaction `used_at` timestamp set
-- Audit log entries created
+- Transaction status transitions to `USED` (auto-complete) or `MATCHED` (manual completion required)
+- Transaction `matched_order_id` column stores the order ID
+- Audit log entries recorded for the match and state transition
 - Order note added with payment verification details
 
 ### 6. Validation Tests
@@ -180,7 +179,7 @@ curl -X POST https://yoursite.com/wp-json/wcmanualpay/v1/notify \
 2. Create order with total 50.00 BDT
 3. Try to use the transaction
 
-**Expected Result**: Order remains pending with error note about amount mismatch
+**Expected Result**: Order remains pending with an error note about amount mismatch (ensure auto-verify mode is set to Strict so the 0.01 tolerance applies)
 
 **Test 2: Currency Mismatch**
 
@@ -188,21 +187,22 @@ curl -X POST https://yoursite.com/wp-json/wcmanualpay/v1/notify \
 2. Create order with currency "BDT"
 3. Try to use the transaction
 
-**Expected Result**: Order remains pending with error note about currency mismatch
+**Expected Result**: Order remains pending with an error note about currency mismatch
 
 **Test 3: Already Used Transaction**
 
 1. Use transaction TXN100 for order #1
 2. Try to use same transaction for order #2
 
-**Expected Result**: Order #2 remains pending with error note that transaction already used
+**Expected Result**: Order #2 remains pending with an error note indicating the transaction is already in `USED` status
 
 **Test 4: 72-Hour Window**
 
-1. Create transaction with `occurred_at` set to 80 hours ago
-2. Try to use the transaction
+1. Set the verification window to 72 hours (or any positive value)
+2. Create transaction with `occurred_at` set to 80 hours ago
+3. Try to use the transaction
 
-**Expected Result**: Order remains pending with error note about expired transaction
+**Expected Result**: Order remains pending with an error note about the transaction being outside the allowed verification window
 
 ### 7. Admin Override
 
@@ -227,8 +227,8 @@ curl -X POST https://yoursite.com/wp-json/wcmanualpay/v1/notify \
 1. Navigate to WooCommerce > Manual Pay
 2. View Transactions tab
 3. Test filters:
-   - Filter by status: "pending"
-   - Filter by status: "used"
+   - Filter by status: "NEW"
+   - Filter by status: "USED"
    - Filter by provider: "bkash"
 4. View Audit Log tab
 5. Check pagination
