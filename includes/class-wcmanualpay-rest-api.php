@@ -86,9 +86,9 @@ class WCManualPay_REST_API {
         }
 
         if ($provided_key !== $verify_key) {
-            WCManualPay_Database::log_audit('api_auth_failed', null, null, null, array(
+            WCManualPay_Database::log_audit('API_AUTH_FAILED', 'webhook', null, array(
                 'ip' => WCManualPay_Database::get_client_ip(),
-            ));
+            ), 'system:webhook');
             return new WP_Error('invalid_verify_key', __('Invalid verify key.', 'wc-manual-pay'), array('status' => 401));
         }
 
@@ -108,7 +108,8 @@ class WCManualPay_REST_API {
         $amount = floatval($request->get_param('amount'));
         $currency = strtoupper(sanitize_text_field($request->get_param('currency')));
         $occurred_at = sanitize_text_field($request->get_param('occurred_at'));
-        $status = sanitize_text_field($request->get_param('status'));
+        $status = strtoupper(sanitize_text_field($request->get_param('status')));
+        $payer = sanitize_text_field($request->get_param('payer'));
 
         // Validate required fields
         if (empty($provider)) {
@@ -127,9 +128,9 @@ class WCManualPay_REST_API {
             return new WP_Error('missing_currency', __('Currency is required.', 'wc-manual-pay'), array('status' => 400));
         }
 
-        // Default status
-        if (empty($status)) {
-            $status = 'pending';
+        // Default status handling (NEW by default, allow INVALID)
+        if ('INVALID' !== $status) {
+            $status = 'NEW';
         }
 
         // Validate occurred_at
@@ -148,10 +149,10 @@ class WCManualPay_REST_API {
 
         if ($existing) {
             // Transaction already exists - return existing data
-            WCManualPay_Database::log_audit('api_duplicate_transaction', $existing->id, null, null, array(
+            WCManualPay_Database::log_audit('API_DUPLICATE_TRANSACTION', 'transaction', $existing->id, array(
                 'provider' => $provider,
                 'txn_id' => $txn_id,
-            ));
+            ), 'system:webhook');
 
             return new WP_REST_Response(array(
                 'success' => true,
@@ -159,6 +160,16 @@ class WCManualPay_REST_API {
                 'transaction_id' => $existing->id,
                 'status' => $existing->status,
             ), 200);
+        }
+
+        $meta_payload = $request->get_json_params();
+
+        if (empty($meta_payload)) {
+            $meta_payload = $request->get_params();
+        }
+
+        if (is_array($meta_payload)) {
+            unset($meta_payload['verify_key']);
         }
 
         // Insert transaction
@@ -169,22 +180,24 @@ class WCManualPay_REST_API {
             'currency' => $currency,
             'occurred_at' => $occurred_at,
             'status' => $status,
+            'payer' => $payer,
+            'meta_json' => $meta_payload,
         ));
 
         if (!$transaction_id) {
-            WCManualPay_Database::log_audit('api_insert_failed', null, null, null, array(
+            WCManualPay_Database::log_audit('API_INSERT_FAILED', 'transaction', null, array(
                 'provider' => $provider,
                 'txn_id' => $txn_id,
-            ));
+            ), 'system:webhook');
             return new WP_Error('insert_failed', __('Failed to insert transaction.', 'wc-manual-pay'), array('status' => 500));
         }
 
-        WCManualPay_Database::log_audit('api_transaction_created', $transaction_id, null, null, array(
+        WCManualPay_Database::log_audit('API_TRANSACTION_CREATED', 'transaction', $transaction_id, array(
             'provider' => $provider,
             'txn_id' => $txn_id,
             'amount' => $amount,
             'currency' => $currency,
-        ));
+        ), 'system:webhook');
 
         // Try to match with pending orders
         $this->try_match_pending_orders($transaction_id);
@@ -205,6 +218,10 @@ class WCManualPay_REST_API {
         $transaction = WCManualPay_Database::get_transaction_by_id($transaction_id);
 
         if (!$transaction) {
+            return;
+        }
+
+        if (!in_array($transaction->status, array('NEW', 'MATCHED'), true)) {
             return;
         }
 
@@ -251,7 +268,9 @@ class WCManualPay_REST_API {
                 $order->payment_complete($transaction->txn_id);
 
                 // Log audit
-                WCManualPay_Database::log_audit('api_payment_matched', $transaction_id, $order->get_id(), null);
+                WCManualPay_Database::log_audit('API_PAYMENT_MATCHED', 'order', $order->get_id(), array(
+                    'transaction_id' => $transaction_id,
+                ));
 
                 // Only match one order
                 break;
@@ -268,7 +287,7 @@ class WCManualPay_REST_API {
      */
     private function validate_transaction_for_order($transaction, $order) {
         // Check if already used
-        if ('used' === $transaction->status) {
+        if ('USED' === $transaction->status) {
             return __('Transaction already used.', 'wc-manual-pay');
         }
 

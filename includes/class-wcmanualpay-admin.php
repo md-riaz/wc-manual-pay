@@ -130,6 +130,8 @@ class WCManualPay_Admin {
         $providers_table = $wpdb->prefix . 'wcmanualpay_transactions';
         $providers = $wpdb->get_col("SELECT DISTINCT provider FROM {$providers_table} ORDER BY provider");
 
+        $available_statuses = WCManualPay_Database::get_valid_statuses();
+
         ?>
         <div style="background: #fff; padding: 20px; margin-top: 20px; border: 1px solid #ccc;">
             <form method="get" style="margin-bottom: 20px;">
@@ -140,8 +142,11 @@ class WCManualPay_Admin {
                     <?php esc_html_e('Status:', 'wc-manual-pay'); ?>
                     <select name="filter_status">
                         <option value=""><?php esc_html_e('All', 'wc-manual-pay'); ?></option>
-                        <option value="pending" <?php selected($status, 'pending'); ?>><?php esc_html_e('Pending', 'wc-manual-pay'); ?></option>
-                        <option value="used" <?php selected($status, 'used'); ?>><?php esc_html_e('Used', 'wc-manual-pay'); ?></option>
+                        <?php foreach ($available_statuses as $status_option) : ?>
+                            <option value="<?php echo esc_attr($status_option); ?>" <?php selected(strtoupper($status), $status_option); ?>>
+                                <?php echo esc_html(ucwords(strtolower($status_option))); ?>
+                            </option>
+                        <?php endforeach; ?>
                     </select>
                 </label>
 
@@ -169,9 +174,10 @@ class WCManualPay_Admin {
                         <th><?php esc_html_e('Transaction ID', 'wc-manual-pay'); ?></th>
                         <th><?php esc_html_e('Amount', 'wc-manual-pay'); ?></th>
                         <th><?php esc_html_e('Currency', 'wc-manual-pay'); ?></th>
+                        <th><?php esc_html_e('Payer', 'wc-manual-pay'); ?></th>
                         <th><?php esc_html_e('Occurred At', 'wc-manual-pay'); ?></th>
                         <th><?php esc_html_e('Status', 'wc-manual-pay'); ?></th>
-                        <th><?php esc_html_e('Order', 'wc-manual-pay'); ?></th>
+                        <th><?php esc_html_e('Matched Order', 'wc-manual-pay'); ?></th>
                         <th><?php esc_html_e('Created At', 'wc-manual-pay'); ?></th>
                     </tr>
                 </thead>
@@ -186,18 +192,28 @@ class WCManualPay_Admin {
                                 <td><?php echo esc_html($txn->id); ?></td>
                                 <td><?php echo esc_html(ucfirst($txn->provider)); ?></td>
                                 <td><?php echo esc_html($txn->txn_id); ?></td>
-                                <td><?php echo esc_html(number_format($txn->amount, 2)); ?></td>
+                                <td>
+                                    <?php
+                                    if (function_exists('wc_format_decimal')) {
+                                        $amount_display = wc_format_decimal($txn->amount, 2);
+                                    } else {
+                                        $amount_display = number_format((float) $txn->amount, 2);
+                                    }
+                                    echo esc_html($amount_display);
+                                    ?>
+                                </td>
                                 <td><?php echo esc_html($txn->currency); ?></td>
+                                <td><?php echo esc_html($txn->payer); ?></td>
                                 <td><?php echo esc_html($txn->occurred_at); ?></td>
                                 <td>
-                                    <span class="status-<?php echo esc_attr($txn->status); ?>">
-                                        <?php echo esc_html(ucfirst($txn->status)); ?>
+                                    <span class="status-<?php echo esc_attr(strtolower($txn->status)); ?>">
+                                        <?php echo esc_html(ucwords(strtolower($txn->status))); ?>
                                     </span>
                                 </td>
                                 <td>
-                                    <?php if ($txn->order_id) : ?>
-                                        <a href="<?php echo esc_url(admin_url('post.php?post=' . $txn->order_id . '&action=edit')); ?>">
-                                            #<?php echo esc_html($txn->order_id); ?>
+                                    <?php if ($txn->matched_order_id) : ?>
+                                        <a href="<?php echo esc_url(admin_url('post.php?post=' . $txn->matched_order_id . '&action=edit')); ?>">
+                                            #<?php echo esc_html($txn->matched_order_id); ?>
                                         </a>
                                     <?php else : ?>
                                         -
@@ -254,52 +270,58 @@ class WCManualPay_Admin {
                 <thead>
                     <tr>
                         <th><?php esc_html_e('ID', 'wc-manual-pay'); ?></th>
+                        <th><?php esc_html_e('Timestamp', 'wc-manual-pay'); ?></th>
+                        <th><?php esc_html_e('Actor', 'wc-manual-pay'); ?></th>
                         <th><?php esc_html_e('Action', 'wc-manual-pay'); ?></th>
-                        <th><?php esc_html_e('Transaction', 'wc-manual-pay'); ?></th>
-                        <th><?php esc_html_e('Order', 'wc-manual-pay'); ?></th>
-                        <th><?php esc_html_e('User', 'wc-manual-pay'); ?></th>
-                        <th><?php esc_html_e('IP Address', 'wc-manual-pay'); ?></th>
-                        <th><?php esc_html_e('Created At', 'wc-manual-pay'); ?></th>
+                        <th><?php esc_html_e('Object', 'wc-manual-pay'); ?></th>
+                        <th><?php esc_html_e('Details', 'wc-manual-pay'); ?></th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($logs)) : ?>
                         <tr>
-                            <td colspan="7"><?php esc_html_e('No audit logs found.', 'wc-manual-pay'); ?></td>
+                            <td colspan="6"><?php esc_html_e('No audit logs found.', 'wc-manual-pay'); ?></td>
                         </tr>
                     <?php else : ?>
                         <?php foreach ($logs as $log) : ?>
                             <tr>
                                 <td><?php echo esc_html($log->id); ?></td>
+                                <td><?php echo esc_html($log->at); ?></td>
+                                <td><?php echo esc_html($log->actor); ?></td>
                                 <td><?php echo esc_html($log->action); ?></td>
                                 <td>
-                                    <?php if ($log->transaction_id) : ?>
-                                        <?php echo esc_html($log->transaction_id); ?>
-                                    <?php else : ?>
-                                        -
-                                    <?php endif; ?>
-                                </td>
-                                <td>
-                                    <?php if ($log->order_id) : ?>
-                                        <a href="<?php echo esc_url(admin_url('post.php?post=' . $log->order_id . '&action=edit')); ?>">
-                                            #<?php echo esc_html($log->order_id); ?>
-                                        </a>
-                                    <?php else : ?>
-                                        -
-                                    <?php endif; ?>
-                                </td>
-                                <td>
                                     <?php
-                                    if ($log->user_id) {
-                                        $user = get_userdata($log->user_id);
-                                        echo $user ? esc_html($user->user_login) : esc_html($log->user_id);
+                                    if ('order' === $log->object_type && $log->object_id) {
+                                        printf('<a href="%s">#%s</a>', esc_url(admin_url('post.php?post=' . $log->object_id . '&action=edit')), esc_html($log->object_id));
+                                    } elseif (!empty($log->object_type)) {
+                                        $label = $log->object_type;
+                                        if ($log->object_id) {
+                                            $label .= ' #' . $log->object_id;
+                                        }
+                                        echo esc_html($label);
                                     } else {
                                         echo '-';
                                     }
                                     ?>
                                 </td>
-                                <td><?php echo esc_html($log->ip_address ?: '-'); ?></td>
-                                <td><?php echo esc_html($log->created_at); ?></td>
+                                <td>
+                                    <?php
+                                    $data = array();
+
+                                    if (!empty($log->data_json)) {
+                                        $decoded = json_decode($log->data_json, true);
+                                        if (is_array($decoded)) {
+                                            $data = $decoded;
+                                        }
+                                    }
+
+                                    if (!empty($data)) {
+                                        echo '<code>' . esc_html(wp_json_encode($data)) . '</code>';
+                                    } else {
+                                        echo '-';
+                                    }
+                                    ?>
+                                </td>
                             </tr>
                         <?php endforeach; ?>
                     <?php endif; ?>

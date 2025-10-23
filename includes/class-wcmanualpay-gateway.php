@@ -187,7 +187,17 @@ class WCManualPay_Gateway extends WC_Payment_Gateway {
 
             if (true === $validation) {
                 // Mark transaction as used
-                WCManualPay_Database::mark_transaction_used($transaction->id, $order_id);
+                $marked = WCManualPay_Database::mark_transaction_used($transaction->id, $order_id);
+
+                if (!$marked) {
+                    $message = __('Unable to reserve the transaction. Please try again or contact support.', 'wc-manual-pay');
+                    wc_add_notice($message, 'error');
+                    WCManualPay_Database::log_audit('TRANSACTION_LOCK_FAILED', 'order', $order_id, array(
+                        'transaction_id' => $transaction->id,
+                    ));
+
+                    return array('result' => 'failure');
+                }
 
                 // Set order transaction ID
                 $order->set_transaction_id($txn_id);
@@ -203,7 +213,9 @@ class WCManualPay_Gateway extends WC_Payment_Gateway {
                 $order->payment_complete($txn_id);
 
                 // Log audit
-                WCManualPay_Database::log_audit('payment_completed', $transaction->id, $order_id, get_current_user_id());
+                WCManualPay_Database::log_audit('PAYMENT_COMPLETED', 'order', $order_id, array(
+                    'transaction_id' => $transaction->id,
+                ));
 
                 // Reduce stock
                 wc_reduce_stock_levels($order_id);
@@ -219,13 +231,16 @@ class WCManualPay_Gateway extends WC_Payment_Gateway {
                 // Validation failed
                 wc_add_notice($validation, 'error');
                 $order->update_status('pending', $validation);
-                WCManualPay_Database::log_audit('payment_validation_failed', $transaction->id, $order_id, get_current_user_id(), array('reason' => $validation));
+                WCManualPay_Database::log_audit('PAYMENT_VALIDATION_FAILED', 'order', $order_id, array(
+                    'transaction_id' => $transaction->id,
+                    'reason' => $validation,
+                ));
                 return array('result' => 'failure');
             }
         } else {
             // Transaction not found - set to pending
             $order->update_status('pending', __('Awaiting manual payment verification.', 'wc-manual-pay'));
-            WCManualPay_Database::log_audit('payment_pending', null, $order_id, get_current_user_id(), array(
+            WCManualPay_Database::log_audit('PAYMENT_PENDING', 'order', $order_id, array(
                 'provider' => $provider,
                 'txn_id' => $txn_id,
             ));
@@ -249,8 +264,12 @@ class WCManualPay_Gateway extends WC_Payment_Gateway {
      */
     private function validate_transaction($transaction, $order) {
         // Check if already used
-        if ('used' === $transaction->status) {
+        if ('USED' === $transaction->status) {
             return __('Transaction already used for another order.', 'wc-manual-pay');
+        }
+
+        if (in_array($transaction->status, array('INVALID', 'REJECTED'), true)) {
+            return __('Transaction is not eligible for use.', 'wc-manual-pay');
         }
 
         // Check amount
@@ -404,7 +423,7 @@ class WCManualPay_Gateway extends WC_Payment_Gateway {
         $order->payment_complete($txn_id);
 
         // Log audit
-        WCManualPay_Database::log_audit('admin_override', null, $order_id, get_current_user_id(), array(
+        WCManualPay_Database::log_audit('ADMIN_OVERRIDE', 'order', $order_id, array(
             'provider' => $provider,
             'txn_id' => $txn_id,
         ));
