@@ -55,3 +55,18 @@ table.wp-list-table td {
 .wcmanualpay-actions select {
     max-width: 120px;
 }
+
+.wcmanualpay-add-transaction-form {
+    max-width: 760px;
+}
+
+.wcmanualpay-add-transaction-form .form-table th {
+    width: 200px;
+    padding-top: 12px;
+}
+
+.wcmanualpay-add-transaction-form .form-table td input[type="text"],
+.wcmanualpay-add-transaction-form .form-table td input[type="number"] {
+    width: 100%;
+    max-width: 320px;
+}
