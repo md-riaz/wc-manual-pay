@@ -40,6 +40,7 @@ class WCManualPay_Admin {
         add_action('admin_post_wcmanualpay_mark_transaction', array($this, 'handle_mark_transaction'));
         add_action('admin_post_wcmanualpay_reject_transaction', array($this, 'handle_reject_transaction'));
         add_action('admin_post_wcmanualpay_unlink_transaction', array($this, 'handle_unlink_transaction'));
+        add_action('admin_post_wcmanualpay_create_transaction', array($this, 'handle_create_transaction'));
     }
 
     /**
@@ -90,6 +91,9 @@ class WCManualPay_Admin {
                 <a href="?page=wcmanualpay-transactions&tab=audit" class="nav-tab <?php echo 'audit' === $current_tab ? 'nav-tab-active' : ''; ?>">
                     <?php esc_html_e('Audit Log', 'wc-manual-pay'); ?>
                 </a>
+                <a href="?page=wcmanualpay-transactions&tab=add-transaction" class="nav-tab <?php echo 'add-transaction' === $current_tab ? 'nav-tab-active' : ''; ?>">
+                    <?php esc_html_e('Add Transaction', 'wc-manual-pay'); ?>
+                </a>
             </nav>
 
             <div class="tab-content">
@@ -98,6 +102,8 @@ class WCManualPay_Admin {
                     $this->render_transactions_tab();
                 } elseif ('audit' === $current_tab) {
                     $this->render_audit_tab();
+                } elseif ('add-transaction' === $current_tab) {
+                    $this->render_add_transaction_tab();
                 }
                 ?>
             </div>
@@ -121,6 +127,87 @@ class WCManualPay_Admin {
         $class = 'notice notice-' . $type;
 
         echo '<div class="' . esc_attr($class) . '"><p>' . esc_html($message) . '</p></div>';
+    }
+
+    /**
+     * Handle creating a transaction from the admin form.
+     */
+    public function handle_create_transaction() {
+        check_admin_referer('wcmanualpay_create_transaction');
+
+        if (!current_user_can('manage_woocommerce')) {
+            $this->redirect_with_message(__('You do not have permission to perform this action.', 'wc-manual-pay'), 'error', 'add-transaction');
+        }
+
+        $provider = isset($_POST['provider']) ? sanitize_text_field(wp_unslash($_POST['provider'])) : '';
+        $txn_id = isset($_POST['txn_id']) ? sanitize_text_field(wp_unslash($_POST['txn_id'])) : '';
+        $amount = isset($_POST['amount']) ? floatval(wp_unslash($_POST['amount'])) : 0;
+        $currency = isset($_POST['currency']) ? strtoupper(sanitize_text_field(wp_unslash($_POST['currency']))) : '';
+        $occurred_at = isset($_POST['occurred_at']) ? sanitize_text_field(wp_unslash($_POST['occurred_at'])) : '';
+        $status = isset($_POST['status']) ? strtoupper(sanitize_text_field(wp_unslash($_POST['status']))) : 'NEW';
+        $payer = isset($_POST['payer']) ? sanitize_text_field(wp_unslash($_POST['payer'])) : '';
+        $meta_raw = isset($_POST['meta']) ? wp_unslash($_POST['meta']) : '';
+
+        $meta_payload = null;
+
+        if (is_string($meta_raw) && '' !== trim($meta_raw)) {
+            $decoded = json_decode($meta_raw, true);
+
+            if (JSON_ERROR_NONE === json_last_error()) {
+                $meta_payload = $decoded;
+            } else {
+                $meta_payload = wp_kses_post($meta_raw);
+            }
+        }
+
+        $payload = array(
+            'provider'   => $provider,
+            'txn_id'     => $txn_id,
+            'amount'     => $amount,
+            'currency'   => $currency,
+            'occurred_at' => $occurred_at,
+            'status'     => $status,
+            'payer'      => $payer,
+            'meta_json'  => $meta_payload,
+        );
+
+        $user = wp_get_current_user();
+        $actor_login = $user && !empty($user->user_login) ? $user->user_login : (string) get_current_user_id();
+        $actor_label = $user && !empty($user->display_name) ? $user->display_name : $actor_login;
+
+        $result = WCManualPay_Transaction_Manager::create_transaction(
+            $payload,
+            array(
+                'actor'         => 'admin:' . $actor_login,
+                'actor_label'   => $actor_label,
+                'action_prefix' => 'ADMIN',
+            )
+        );
+
+        if (is_wp_error($result)) {
+            $this->redirect_with_message($result->get_error_message(), 'error', 'add-transaction');
+        }
+
+        if (!empty($result['duplicate'])) {
+            $this->redirect_with_message(
+                sprintf(__('Transaction already exists (ID #%1$d).', 'wc-manual-pay'), $result['transaction_id'])
+            );
+        }
+
+        $message = sprintf(__('Transaction #%1$d created successfully.', 'wc-manual-pay'), $result['transaction_id']);
+        $match = isset($result['match_result']) ? $result['match_result'] : null;
+
+        if (!empty($match['matched']) && !empty($match['order_id'])) {
+            $order_id = absint($match['order_id']);
+
+            if (!empty($match['auto_completed'])) {
+                $message .= ' ' . sprintf(__('Order #%1$d was automatically completed.', 'wc-manual-pay'), $order_id);
+            } else {
+                $message .= ' ' . sprintf(__('Order #%1$d was matched and awaits manual review.', 'wc-manual-pay'), $order_id);
+            }
+        }
+
+        $this->redirect_with_message($message);
     }
 
     /**
@@ -279,6 +366,112 @@ class WCManualPay_Admin {
     }
 
     /**
+     * Get the configured payment providers.
+     *
+     * @return array
+     */
+    private function get_available_providers() {
+        $providers = WCManualPay_Gateway::get_global_providers();
+
+        if (empty($providers)) {
+            return array();
+        }
+
+        return array_map('sanitize_text_field', $providers);
+    }
+
+    /**
+     * Render the add transaction tab.
+     */
+    private function render_add_transaction_tab() {
+        $providers = $this->get_available_providers();
+        $default_currency = function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'USD';
+        $can_create = !empty($providers);
+        ?>
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="wcmanualpay-add-transaction-form">
+            <?php wp_nonce_field('wcmanualpay_create_transaction'); ?>
+            <input type="hidden" name="action" value="wcmanualpay_create_transaction" />
+
+            <table class="form-table" role="presentation">
+                <tbody>
+                    <tr>
+                        <th scope="row"><label for="wcmanualpay-provider"><?php esc_html_e('Provider', 'wc-manual-pay'); ?></label></th>
+                        <td>
+                            <?php if ($can_create) : ?>
+                                <select id="wcmanualpay-provider" name="provider" required>
+                                    <option value=""><?php esc_html_e('Select a provider', 'wc-manual-pay'); ?></option>
+                                    <?php foreach ($providers as $provider_option) : ?>
+                                        <option value="<?php echo esc_attr($provider_option); ?>"><?php echo esc_html($provider_option); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            <?php else : ?>
+                                <p class="description"><?php esc_html_e('Configure at least one provider in the Manual Pay gateway settings before creating transactions.', 'wc-manual-pay'); ?></p>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="wcmanualpay-txn-id"><?php esc_html_e('Transaction ID', 'wc-manual-pay'); ?></label></th>
+                        <td>
+                            <input type="text" id="wcmanualpay-txn-id" name="txn_id" required />
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="wcmanualpay-amount"><?php esc_html_e('Amount', 'wc-manual-pay'); ?></label></th>
+                        <td>
+                            <input type="number" step="0.01" min="0" id="wcmanualpay-amount" name="amount" required />
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="wcmanualpay-currency"><?php esc_html_e('Currency', 'wc-manual-pay'); ?></label></th>
+                        <td>
+                            <input type="text" id="wcmanualpay-currency" name="currency" maxlength="3" value="<?php echo esc_attr($default_currency); ?>" required />
+                            <p class="description"><?php esc_html_e('Use a three-letter currency code (e.g. USD).', 'wc-manual-pay'); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="wcmanualpay-occurred-at"><?php esc_html_e('Occurred at', 'wc-manual-pay'); ?></label></th>
+                        <td>
+                            <input type="text" id="wcmanualpay-occurred-at" name="occurred_at" placeholder="<?php esc_attr_e('YYYY-MM-DD HH:MM:SS', 'wc-manual-pay'); ?>" />
+                            <p class="description"><?php esc_html_e('Leave blank to use the current time. Format: YYYY-MM-DD HH:MM:SS.', 'wc-manual-pay'); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="wcmanualpay-status"><?php esc_html_e('Status', 'wc-manual-pay'); ?></label></th>
+                        <td>
+                            <select id="wcmanualpay-status" name="status">
+                                <option value="NEW"><?php esc_html_e('New', 'wc-manual-pay'); ?></option>
+                                <option value="INVALID"><?php esc_html_e('Invalid', 'wc-manual-pay'); ?></option>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="wcmanualpay-payer"><?php esc_html_e('Payer (optional)', 'wc-manual-pay'); ?></label></th>
+                        <td>
+                            <input type="text" id="wcmanualpay-payer" name="payer" />
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="wcmanualpay-meta"><?php esc_html_e('Metadata (optional)', 'wc-manual-pay'); ?></label></th>
+                        <td>
+                            <textarea id="wcmanualpay-meta" name="meta" rows="6" class="large-text"></textarea>
+                            <p class="description"><?php esc_html_e('Paste JSON or free-form details to store with the transaction record.', 'wc-manual-pay'); ?></p>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <?php
+            if ($can_create) {
+                submit_button(__('Create transaction', 'wc-manual-pay'));
+            } else {
+                submit_button(__('Create transaction', 'wc-manual-pay'), 'primary', 'submit', true, array('disabled' => 'disabled'));
+            }
+            ?>
+        </form>
+        <?php
+    }
+
+    /**
      * Render action controls for a transaction row.
      *
      * @param object $txn Transaction row.
@@ -337,14 +530,15 @@ class WCManualPay_Admin {
      * @param string $message Notice message.
      * @param string $type    Notice type (success|error).
      */
-    private function redirect_with_message($message, $type = 'success') {
+    private function redirect_with_message($message, $type = 'success', $tab = 'transactions') {
         $message = sanitize_text_field($message);
         $type = ('error' === $type) ? 'error' : 'success';
+        $tab = sanitize_key($tab);
 
         $url = add_query_arg(
             array(
                 'page' => 'wcmanualpay-transactions',
-                'tab' => 'transactions',
+                'tab' => $tab,
                 'wcmanualpay_message' => $message,
                 'wcmanualpay_message_type' => $type,
             ),

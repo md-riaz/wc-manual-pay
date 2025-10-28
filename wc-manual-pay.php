@@ -62,6 +62,7 @@ final class WCManualPay {
     private function includes() {
         require_once WCMANUALPAY_PLUGIN_DIR . 'includes/class-wcmanualpay-database.php';
         require_once WCMANUALPAY_PLUGIN_DIR . 'includes/class-wcmanualpay-gateway.php';
+        require_once WCMANUALPAY_PLUGIN_DIR . 'includes/class-wcmanualpay-transaction-manager.php';
         require_once WCMANUALPAY_PLUGIN_DIR . 'includes/class-wcmanualpay-rest-api.php';
         require_once WCMANUALPAY_PLUGIN_DIR . 'includes/class-wcmanualpay-admin.php';
         require_once WCMANUALPAY_PLUGIN_DIR . 'includes/class-wcmanualpay-blocks.php';

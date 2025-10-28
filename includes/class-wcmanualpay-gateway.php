@@ -252,6 +252,24 @@ class WCManualPay_Gateway extends WC_Payment_Gateway {
     }
 
     /**
+     * Retrieve globally configured providers list.
+     *
+     * @return array
+     */
+    public static function get_global_providers() {
+        $providers_text = self::get_option_value('providers', "bkash\nnagad\nrocket");
+        $providers = preg_split('/\r\n|\r|\n/', (string) $providers_text);
+
+        if (false === $providers) {
+            $providers = array();
+        }
+
+        $providers = array_filter(array_map('trim', $providers));
+
+        return array_values(array_unique($providers));
+    }
+
+    /**
      * Retrieve global IP allowlist values.
      *
      * @return array
