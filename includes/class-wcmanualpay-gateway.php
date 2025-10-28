@@ -404,12 +404,6 @@ class WCManualPay_Gateway extends WC_Payment_Gateway {
                         'auto_completed' => true,
                     ));
 
-                    wc_reduce_stock_levels($order_id);
-
-                    if (WC()->cart) {
-                        WC()->cart->empty_cart();
-                    }
-
                     return array(
                         'result' => 'success',
                         'redirect' => $this->get_return_url($order),
