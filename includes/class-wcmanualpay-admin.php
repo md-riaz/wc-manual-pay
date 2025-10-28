@@ -388,6 +388,10 @@ class WCManualPay_Admin {
             $this->redirect_with_message(__('Order not found.', 'wc-manual-pay'), 'error');
         }
 
+        if ('wcmanualpay' !== $order->get_payment_method()) {
+            $this->redirect_with_message(__('The selected order does not use the Manual Pay gateway.', 'wc-manual-pay'), 'error');
+        }
+
         if (!WCManualPay_Database::link_transaction_to_order($transaction_id, $order_id)) {
             $this->redirect_with_message(__('Unable to link transaction to order.', 'wc-manual-pay'), 'error');
         }
@@ -435,6 +439,10 @@ class WCManualPay_Admin {
 
         if (!$order) {
             $this->redirect_with_message(__('Order not found.', 'wc-manual-pay'), 'error');
+        }
+
+        if ('wcmanualpay' !== $order->get_payment_method()) {
+            $this->redirect_with_message(__('The selected order does not use the Manual Pay gateway.', 'wc-manual-pay'), 'error');
         }
 
         if (!WCManualPay_Database::mark_transaction_used($transaction_id, $order_id)) {
@@ -519,23 +527,30 @@ class WCManualPay_Admin {
         }
 
         $previous_order_id = absint($transaction->matched_order_id);
+        $order = wc_get_order($previous_order_id);
+
+        if (!$order) {
+            $this->redirect_with_message(__('Order not found.', 'wc-manual-pay'), 'error');
+        }
+
+        if ('wcmanualpay' !== $order->get_payment_method()) {
+            $this->redirect_with_message(__('The selected order does not use the Manual Pay gateway.', 'wc-manual-pay'), 'error');
+        }
+
         $success = WCManualPay_Database::unlink_transaction_from_order($transaction_id, $target_status, $reason, null);
 
         if (!$success) {
             $this->redirect_with_message(__('Unable to unlink transaction.', 'wc-manual-pay'), 'error');
         }
 
-        if ($previous_order_id) {
-            $order = wc_get_order($previous_order_id);
-            if ($order) {
-                $order->add_order_note(
-                    sprintf(
-                        __('Transaction %1$s unlinked by admin. Reason: %2$s', 'wc-manual-pay'),
-                        $transaction->txn_id,
-                        $reason
-                    )
-                );
-            }
+        if ($previous_order_id && $order) {
+            $order->add_order_note(
+                sprintf(
+                    __('Transaction %1$s unlinked by admin. Reason: %2$s', 'wc-manual-pay'),
+                    $transaction->txn_id,
+                    $reason
+                )
+            );
         }
 
         $this->redirect_with_message(
