@@ -543,15 +543,13 @@ class WCManualPay_Admin {
             $this->redirect_with_message(__('Unable to unlink transaction.', 'wc-manual-pay'), 'error');
         }
 
-        if ($previous_order_id && $order) {
-            $order->add_order_note(
-                sprintf(
-                    __('Transaction %1$s unlinked by admin. Reason: %2$s', 'wc-manual-pay'),
-                    $transaction->txn_id,
-                    $reason
-                )
-            );
-        }
+        $order->add_order_note(
+            sprintf(
+                __('Transaction %1$s unlinked by admin. Reason: %2$s', 'wc-manual-pay'),
+                $transaction->txn_id,
+                $reason
+            )
+        );
 
         $this->redirect_with_message(
             sprintf(__('Transaction #%1$d unlinked from order #%2$d.', 'wc-manual-pay'), $transaction_id, $previous_order_id)
